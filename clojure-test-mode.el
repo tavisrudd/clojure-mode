@@ -403,9 +403,12 @@ Retuns the problem overlay if such a position is found, otherwise nil."
 (defun clojure-test-jump-to-implementation ()
   "Jump from test file to implementation."
   (interactive)
-  (find-file (format "%s/src/%s.clj"
+  (find-file (format "%s%s%s.clj"
                      (locate-dominating-file buffer-file-name "src/")
-                     (clojure-test-implementation-for (clojure-find-package)))))
+                     (file-name-as-directory
+                      (clojure-language-folder buffer-file-name))
+                     (clojure-test-implementation-for
+                      (replace-regexp-in-string "-test$" "" (clojure-find-package))))))
 
 (defvar clojure-test-mode-map
   (let ((map (make-sparse-keymap)))

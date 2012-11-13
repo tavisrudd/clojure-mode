@@ -1127,6 +1127,12 @@ The arguments are dir, hostname, and port.  The return value should be an `alist
 (defun clojure-underscores-for-hyphens (namespace)
   (replace-regexp-in-string "-" "_" namespace))
 
+(defun clojure-language-folder (file-path)
+  (cond
+   ((string-match "clj/" file-path) "clj")
+   ((string-match "cljs/" file-path) "cljs")
+   (t "")))
+
 (defun clojure-test-for (namespace)
   (let* ((namespace (clojure-underscores-for-hyphens namespace))
          (segments (split-string namespace "\\."))
@@ -1138,10 +1144,18 @@ The arguments are dir, hostname, and port.  The return value should be an `alist
 (defun clojure-jump-to-test ()
   "Jump from implementation file to test."
   (interactive)
-  (find-file (format "%stest/%s.clj"
-                     (file-name-as-directory
-                      (locate-dominating-file buffer-file-name "src/"))
-                     (clojure-test-for (clojure-find-ns)))))
+  (let ((path (format "%stest/%s%s_test.clj"
+                      ;; project path
+                      (file-name-as-directory
+                       (locate-dominating-file buffer-file-name "src/"))
+                      ;; lang prefix (clj, cljs or empty string)
+                      (file-name-as-directory
+                       (clojure-language-folder buffer-file-name))
+                      ;; path of the namespace with test in between
+                      (clojure-test-for (clojure-find-ns)))))
+    (find-file path)))
+
+(clojure-test-for "dalap.selector")
 
 (defun clojure-jump-between-tests-and-code ()
   (interactive)
@@ -1170,9 +1184,9 @@ The arguments are dir, hostname, and port.  The return value should be an `alist
 
 (defun clojure-slime-remote-file-name-hook ()
   (setq slime-from-lisp-filename-function
-        'slime-tramp-remote-filename)
+        'clojure-slime-tramp-remote-filename)
   (setq slime-to-lisp-filename-function
-        'slime-tramp-local-filename))
+        'clojure-slime-tramp-local-filename))
 
 (add-hook 'slime-connected-hook 'clojure-slime-remote-file-name-hook)
 

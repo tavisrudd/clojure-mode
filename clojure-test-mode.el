@@ -192,33 +192,59 @@
     (def #^{:dynamic true} *test-ns-regex* nil)
 
     (defn report [event]
-     (if-let [current-test (last clojure.test/*testing-vars*)]
-        (let [test-result-key (keyword (format \"%s/%s\" (ns-name *ns*)
-                                 (:name (meta current-test))))
+     (if-let [current-test-var (last clojure.test/*testing-vars*)]
+        (let [test-meta (meta current-test-var)
+              test-result-key (keyword
+                               (format \"%s/%s\"
+                                 (ns-name (:ns test-meta))
+                                 (:name test-meta)))
               msg [(:type event) (:message event)
                    (str (:expected event))
                    (str (:actual event))
                    (if (= (:type event) :error)
                       ((file-position 3) 1)
                      (:line event))]]
-             (swap! test-run-results update-in [test-result-key] conj msg)))
+             (swap! test-run-results update-in [test-result-key] conj msg)
+             ;; Doing this redundantly for every assertion, but it's cheap enough
+             (swap! test-run-results update-in [test-result-key]
+                    with-meta
+                    (select-keys test-meta [:file :line :name]))))
      (binding [*test-out* (or *clojure-test-mode-out* *out*)]
        ((.getRawRoot #'clojure.test/report) event)))
 
  (defn run-all-tests []
    (reset! test-run-results {})
-   (refresh)
    (binding [clojure.test/report clojure.test.mode/report]
-     (let [result (if *test-ns-regex*
+     (let [start (System/nanoTime)
+           _ (refresh)
+           result (if *test-ns-regex*
                     (clojure.test/run-all-tests *test-ns-regex*)
-                    (clojure.test/run-all-tests))]
+                    (clojure.test/run-all-tests))
+           end (System/nanoTime)]
        (list (str *test-ns-regex*)
              (:test result)
              (:pass result)
              (:fail result)
-             (:error result)))))"))
+             (:error result)
+             (/ (- end start) 1e9)))))"))
   (when clojure-test-ns-regex
     (clojure-test-set-filter clojure-test-ns-regex)))
+
+(defun clojure-test-echo-results ()
+  (message
+   (propertize
+    (format
+     "Ran %s tests (filter: %s). %s assertions pass, %s failures, %s errors. %s sec"
+     clojure-test-test-count clojure-test-ns-regex
+     clojure-test-pass-count
+     clojure-test-failure-count
+     clojure-test-error-count
+     clojure-test-run-time)
+    'face
+    (cond ((not (= clojure-test-error-count 0)) 'clojure-test-error-face)
+          ((not (= clojure-test-failure-count 0)) 'clojure-test-failure-face)
+          (t 'clojure-test-success-face)))))
+
 
 (defun clojure-test-set-filter (filter-regexp)
   (interactive
@@ -235,60 +261,57 @@
            filter-regexp)))
 
 (defun clojure-test-get-results (result)
-  (destructuring-bind (filter-re
-                       test-count pass-count
-                       fail-count error-count) (read result)
+  (destructuring-bind
+      (filter-re
+       test-count pass-count fail-count error-count
+       run-time) (read result)
     (setq
      clojure-test-ns-regex filter-re
      clojure-test-test-count test-count
      clojure-test-pass-count pass-count
      clojure-test-failure-count fail-count
-     clojure-test-error-count error-count)
+     clojure-test-error-count error-count
+     clojure-test-run-time run-time)
     (clojure-test-echo-results)
     (when (or fail-count error-count)
       (clojure-test-eval
-       (concat "(for [[name res] @clojure.test.mode/test-run-results] (cons (str name) res))")
+       (concat "(for [[name res] @clojure.test.mode/test-run-results]
+                   (list (str name) (map (fn [[k v]] (list k v)) (seq (meta res))) res))")
        #'clojure-test-extract-results))))
 
-(defun clojure-test-echo-results ()
-  (message
-   (propertize
-    (format "Ran %s tests (filter: %s). %s assertions pass, %s failures, %s errors."
-            clojure-test-test-count clojure-test-ns-regex
-            clojure-test-pass-count
-            clojure-test-failure-count
-            clojure-test-error-count)
-    'face
-    (cond ((not (= clojure-test-error-count 0)) 'clojure-test-error-face)
-          ((not (= clojure-test-failure-count 0)) 'clojure-test-failure-face)
-          (t 'clojure-test-success-face)))))
-
 (defun clojure-test-extract-results (results)
-  (let ((result-vars (read (cadr results))))
-    (mapc #'clojure-test-extract-result result-vars))
+  (save-window-excursion
+    (with-current-buffer (process-buffer (slime-current-connection))
+      (let ((result-vars (read (cadr results)))
+            (proj-root-dir (file-name-as-directory
+                            (locate-dominating-file default-directory "project.clj"))))
+        (dolist (result-var result-vars)
+          (destructuring-bind (name meta messages) result-var
+            (let* ((file (cadr (assoc :file meta)))
+                   (full-path (format "%stest/%s" proj-root-dir file)))
+              (dolist (assertion-result messages)
+                (destructuring-bind (event msg expected actual line)
+                    (coerce assertion-result 'list)
+                  (cond ((equal :fail event)
+                         (clojure-test-highlight-problem
+                          full-path line event
+                          (format "Expected %s, got %s" expected actual)))
+                        ((equal :error event)
+                         (clojure-test-highlight-problem
+                          full-path line event actual)))))))))))
   (clojure-test-echo-results))
 
-(defun clojure-test-extract-result (result)
-  "Parse the result from a single test. May contain multiple is blocks."
-  (dolist (is-result (rest result))
-    (unless (member (aref is-result 0) clojure-test-ignore-results)
-      (destructuring-bind (event msg expected actual line) (coerce is-result 'list)
-        (if (equal :fail event)
-            (progn (clojure-test-highlight-problem
-                    line event (format "Expected %s, got %s" expected actual)))
-          (when (equal :error event)
-            (clojure-test-highlight-problem line event actual)))))))
-
-(defun clojure-test-highlight-problem (line event message)
-  (save-excursion
-    (goto-line line)
-    (let ((beg (point)))
-      (end-of-line)
-      (let ((overlay (make-overlay beg (point))))
-        (overlay-put overlay 'face (if (equal event :fail)
-                                       'clojure-test-failure-face
-                                     'clojure-test-error-face))
-        (overlay-put overlay 'message message)))))
+(defun clojure-test-highlight-problem (file line event message)
+  (with-current-buffer (find-file file)
+    (save-excursion
+      (goto-line line)
+      (let ((beg (point)))
+        (end-of-line)
+        (let ((overlay (make-overlay beg (point))))
+          (overlay-put overlay 'face (if (equal event :fail)
+                                         'clojure-test-failure-face
+                                       'clojure-test-error-face))
+          (overlay-put overlay 'message message))))))
 
 ;; Problem navigation
 (defun clojure-test-find-next-problem (here)

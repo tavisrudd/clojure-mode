@@ -207,8 +207,10 @@
              (swap! test-run-results update-in [test-result-key] conj msg)
              ;; Doing this redundantly for every assertion, but it's cheap enough
              (swap! test-run-results update-in [test-result-key]
-                    with-meta
-                    (select-keys test-meta [:file :line :name]))))
+                    with-meta ;;TODO: do this path correctly and add tramp support
+                    (merge {:file (format \"%s/test/%s\" (System/getProperty \"user.dir\")
+                                       (:file test-meta))}
+                        (select-keys test-meta [:line :name])))))
      (binding [*test-out* (or *clojure-test-mode-out* *out*)]
        ((.getRawRoot #'clojure.test/report) event)))
 
@@ -234,8 +236,11 @@
   (message
    (propertize
     (format
-     "Ran %s tests (filter: %s). %s assertions pass, %s failures, %s errors. %s sec"
-     clojure-test-test-count clojure-test-ns-regex
+     "Ran %s tests%s. %s assertions pass, %s failures, %s errors. %s sec"
+     clojure-test-test-count
+     (if (and clojure-test-ns-regex (not (equal clojure-test-ns-regex "")))
+         (format " (filter-re: %s)" clojure-test-ns-regex)
+       "")
      clojure-test-pass-count
      clojure-test-failure-count
      clojure-test-error-count
@@ -262,9 +267,7 @@
 
 (defun clojure-test-get-results (result)
   (destructuring-bind
-      (filter-re
-       test-count pass-count fail-count error-count
-       run-time) (read result)
+      (filter-re test-count pass-count fail-count error-count run-time) (read result)
     (setq
      clojure-test-ns-regex filter-re
      clojure-test-test-count test-count
@@ -277,41 +280,37 @@
       (clojure-test-eval
        (concat "(for [[name res] @clojure.test.mode/test-run-results]
                    (list (str name) (map (fn [[k v]] (list k v)) (seq (meta res))) res))")
-       #'clojure-test-extract-results))))
+       #'clojure-test-highlight-problems))))
 
-(defun clojure-test-extract-results (results)
+(defun clojure-test-highlight-problems (results)
   (save-window-excursion
-    (with-current-buffer (process-buffer (slime-current-connection))
-      (let ((result-vars (read (cadr results)))
-            (proj-root-dir (file-name-as-directory
-                            (locate-dominating-file default-directory "project.clj"))))
-        (dolist (result-var result-vars)
-          (destructuring-bind (name meta messages) result-var
-            (let* ((file (cadr (assoc :file meta)))
-                   (full-path (format "%stest/%s" proj-root-dir file)))
-              (dolist (assertion-result messages)
-                (destructuring-bind (event msg expected actual line)
-                    (coerce assertion-result 'list)
-                  (cond ((equal :fail event)
-                         (clojure-test-highlight-problem
-                          full-path line event
-                          (format "Expected %s, got %s" expected actual)))
-                        ((equal :error event)
-                         (clojure-test-highlight-problem
-                          full-path line event actual)))))))))))
+    (dolist (result (read (cadr results)))
+      (destructuring-bind (name meta messages) result
+        (let ((file (cadr (assoc :file meta))))
+          (dolist (assertion-result messages)
+            (destructuring-bind (event msg expected actual line)
+                (coerce assertion-result 'list)
+              (cond ((equal :fail event)
+                     (clojure-test-highlight-problem
+                      file line event (format "Expected %s, got %s" expected actual)))
+                    ((equal :error event)
+                     (clojure-test-highlight-problem file line event actual)))))))))
+  ;; call this again to make sure the message persists
   (clojure-test-echo-results))
 
 (defun clojure-test-highlight-problem (file line event message)
-  (with-current-buffer (find-file file)
-    (save-excursion
-      (goto-line line)
-      (let ((beg (point)))
-        (end-of-line)
-        (let ((overlay (make-overlay beg (point))))
-          (overlay-put overlay 'face (if (equal event :fail)
-                                         'clojure-test-failure-face
-                                       'clojure-test-error-face))
-          (overlay-put overlay 'message message))))))
+  (if (file-exists-p file)
+      (with-current-buffer (find-file file)
+        (save-excursion
+          (goto-line line)
+          (let ((beg (point)))
+            (end-of-line)
+            (let ((overlay (make-overlay beg (point))))
+              (overlay-put overlay 'face (if (equal event :fail)
+                                             'clojure-test-failure-face
+                                           'clojure-test-error-face))
+              (overlay-put overlay 'message message)))))
+    (message "Can't find test file %s" file)))
 
 ;; Problem navigation
 (defun clojure-test-find-next-problem (here)

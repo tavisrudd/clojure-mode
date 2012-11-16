@@ -151,11 +151,17 @@
   :group 'clojure-test-mode)
 
 ;; Counts
-
-(defvar clojure-test-count 0)
+(defvar clojure-test-ns-regex nil)
+(defvar clojure-test-test-count 0)
+(defvar clojure-test-pass-count 0)
 (defvar clojure-test-failure-count 0)
 (defvar clojure-test-error-count 0)
 
+(defun clojure-test-reset-counts ()
+  (setq clojure-test-test-count 0
+        clojure-test-pass-count 0
+        clojure-test-failure-count 0
+        clojure-test-error-count 0))
 ;; Consts
 
 (defconst clojure-test-ignore-results
@@ -176,61 +182,81 @@
   (when (eq (compare-strings "clojure" 0 7 (slime-connection-name) 0 7) t)
     (clojure-test-eval-sync
      "(ns clojure.test.mode
+        (:require [clojure.tools.namespace.repl :refer [refresh]])
         (:use [clojure.test :only [file-position *testing-vars* *test-out*
                                    join-fixtures *report-counters* do-report
                                    test-var *initial-report-counters*]]))
 
+    (def test-run-results (atom {}))
     (def #^{:dynamic true} *clojure-test-mode-out* nil)
+    (def #^{:dynamic true} *test-ns-regex* nil)
+
     (defn report [event]
      (if-let [current-test (last clojure.test/*testing-vars*)]
-             (alter-meta! current-test
-                          assoc :status (conj (:status (meta current-test))
-                                          [(:type event) (:message event)
-                                           (str (:expected event))
-                                           (str (:actual event))
-                                           (if (and (= (:major *clojure-version*) 1)
-                                                    (< (:minor *clojure-version*) 2))
-                                               ((file-position 2) 1)
-                                               (if (= (:type event) :error)
-                                                   ((file-position 3) 1)
-                                                   (:line event)))])))
+        (let [test-result-key (keyword (format \"%s/%s\" (ns-name *ns*)
+                                 (:name (meta current-test))))
+              msg [(:type event) (:message event)
+                   (str (:expected event))
+                   (str (:actual event))
+                   (if (= (:type event) :error)
+                      ((file-position 3) 1)
+                     (:line event))]]
+             (swap! test-run-results update-in [test-result-key] conj msg)))
      (binding [*test-out* (or *clojure-test-mode-out* *out*)]
        ((.getRawRoot #'clojure.test/report) event)))
 
-   (defn clojure-test-mode-test-one-var [test-ns test-name]
-     (let [v (ns-resolve test-ns test-name)
-           once-fixture-fn (join-fixtures (::once-fixtures (meta (find-ns test-ns))))
-           each-fixture-fn (join-fixtures (::each-fixtures (meta (find-ns test-ns))))]
-       (once-fixture-fn
-        (fn []
-          (when (:test (meta v))
-            (each-fixture-fn (fn [] (test-var v))))))))
+ (defn run-all-tests []
+   (reset! test-run-results {})
+   (refresh)
+   (binding [clojure.test/report clojure.test.mode/report]
+     (let [result (if *test-ns-regex*
+                    (clojure.test/run-all-tests *test-ns-regex*)
+                    (clojure.test/run-all-tests))]
+       (list (str *test-ns-regex*)
+             (:test result)
+             (:pass result)
+             (:fail result)
+             (:error result)))))"))
+  (when clojure-test-ns-regex
+    (clojure-test-set-filter clojure-test-ns-regex)))
 
-    ;; adapted from test-ns
-    (defn clojure-test-mode-test-one-in-ns [ns test-name]
-      (binding [*report-counters* (ref *initial-report-counters*)]
-        (let [ns-obj (the-ns ns)]
-          (do-report {:type :begin-test-ns, :ns ns-obj})
-          ;; If the namespace has a test-ns-hook function, call that:
-          (if-let [v (find-var (symbol (str (ns-name ns-obj)) \"test-ns-hook\"))]
-            ((var-get v))
-            ;; Otherwise, just test every var in the namespace.
-            (clojure-test-mode-test-one-var ns test-name))
-          (do-report {:type :end-test-ns, :ns ns-obj}))
-        (do-report (assoc @*report-counters* :type :summary)))) ")))
+(defun clojure-test-set-filter (filter-regexp)
+  (interactive
+   (list (read-from-minibuffer
+          "Filter: "
+          (or clojure-test-ns-regex
+              (format "%s.*" (car (split-string
+                                   (slime-current-package) "\\."))))
+          nil nil 'clojure-test-set-filter)))
+  (setq clojure-test-ns-regex filter-regexp)
+  (clojure-test-eval
+   (format "(alter-var-root #'clojure.test.mode/*test-ns-regex*
+             (constantly #\"%s\"))"
+           filter-regexp)))
 
 (defun clojure-test-get-results (result)
-  (clojure-test-eval
-   (concat "(map #(cons (str (:name (meta %)))
-                (:status (meta %))) (vals (ns-interns '"
-           (slime-current-package) ")))")
-   #'clojure-test-extract-results))
+  (destructuring-bind (filter-re
+                       test-count pass-count
+                       fail-count error-count) (read result)
+    (setq
+     clojure-test-ns-regex filter-re
+     clojure-test-test-count test-count
+     clojure-test-pass-count pass-count
+     clojure-test-failure-count fail-count
+     clojure-test-error-count error-count)
+    (clojure-test-echo-results)
+    (when (or fail-count error-count)
+      (clojure-test-eval
+       (concat "(for [[name res] @clojure.test.mode/test-run-results] (cons (str name) res))")
+       #'clojure-test-extract-results))))
 
 (defun clojure-test-echo-results ()
   (message
    (propertize
-    (format "Ran %s tests. %s failures, %s errors."
-            clojure-test-count clojure-test-failure-count
+    (format "Ran %s tests (filter: %s). %s assertions pass, %s failures, %s errors."
+            clojure-test-test-count clojure-test-ns-regex
+            clojure-test-pass-count
+            clojure-test-failure-count
             clojure-test-error-count)
     'face
     (cond ((not (= clojure-test-error-count 0)) 'clojure-test-error-face)
@@ -239,25 +265,19 @@
 
 (defun clojure-test-extract-results (results)
   (let ((result-vars (read (cadr results))))
-    ;; slime-eval-async hands us a cons with a useless car
-    (mapc #'clojure-test-extract-result result-vars)
-    ;; (slime-repl-emit (concat "\n" (make-string (1- (window-width)) ?=) "\n"))
-    (clojure-test-echo-results)))
+    (mapc #'clojure-test-extract-result result-vars))
+  (clojure-test-echo-results))
 
 (defun clojure-test-extract-result (result)
   "Parse the result from a single test. May contain multiple is blocks."
   (dolist (is-result (rest result))
     (unless (member (aref is-result 0) clojure-test-ignore-results)
-      (incf clojure-test-count)
       (destructuring-bind (event msg expected actual line) (coerce is-result 'list)
         (if (equal :fail event)
-            (progn (incf clojure-test-failure-count)
-                   (clojure-test-highlight-problem
+            (progn (clojure-test-highlight-problem
                     line event (format "Expected %s, got %s" expected actual)))
           (when (equal :error event)
-            (incf clojure-test-error-count)
             (clojure-test-highlight-problem line event actual)))))))
-
 
 (defun clojure-test-highlight-problem (line event message)
   (save-excursion
@@ -321,42 +341,11 @@ Retuns the problem overlay if such a position is found, otherwise nil."
   (save-some-buffers nil (lambda () (equal major-mode 'clojure-mode)))
   (message "Testing...")
   (save-window-excursion
-    (if (not (clojure-in-tests-p))
-        (clojure-jump-to-test))
     (clojure-test-clear
      (lambda (&rest args)
-       ;; clojure-test-eval will wrap in with-out-str
-       (slime-eval-async `(swank:load-file
-                           ,(slime-to-lisp-filename
-                             (expand-file-name (buffer-file-name))))
-                         (lambda (&rest args)
-                           (slime-eval-async '(swank:interactive-eval
-                                               "(binding [clojure.test/report
-                                               clojure.test.mode/report]
-                                                (clojure.test/run-tests))")
-                                             #'clojure-test-get-results)))))))
-(defun clojure-test-run-test ()
-  "Run the test at point."
-  (interactive)
-  (save-some-buffers nil (lambda () (equal major-mode 'clojure-mode)))
-  (clojure-test-clear
-   (lambda (&rest args)
-     (let* ((f (which-function))
-            (test-name (if (listp f) (first f) f)))
-       (slime-eval-async
-        `(swank:interactive-eval
-          ,(format "(binding [clojure.test/report clojure.test.mode/report]
-                        (load-file \"%s\")
-                        (clojure.test.mode/clojure-test-mode-test-one-in-ns '%s '%s)
-                        (cons (:name (meta (var %s))) (:status (meta (var %s)))))"
-                   (buffer-file-name)
-                   (slime-current-package) test-name
-                   test-name test-name))
-        (lambda (result-str)
-          (let ((result (read result-str)))
-            (if (cdr result)
-                (clojure-test-extract-result result)
-              (message "Not in a test.")))))))))
+       (slime-eval-async '(swank:interactive-eval
+                           "(clojure.test.mode/run-all-tests)")
+                         #'clojure-test-get-results)))))
 
 (defun clojure-test-show-result ()
   "Show the result of the test under point."
@@ -371,14 +360,9 @@ Retuns the problem overlay if such a position is found, otherwise nil."
   "Remove overlays and clear stored results."
   (interactive)
   (remove-overlays)
-  (setq clojure-test-count 0
-        clojure-test-failure-count 0
-        clojure-test-error-count 0)
-  (clojure-test-eval
-   "(doseq [t (vals (ns-interns *ns*))]
-      (alter-meta! t assoc :status [])
-      (alter-meta! t assoc :test nil))"
-   callback))
+  (clojure-test-reset-counts)
+  (when callback
+    (funcall callback)))
 
 (defun clojure-test-next-problem ()
   "Go to and describe the next test problem in the buffer."
@@ -411,7 +395,7 @@ Retuns the problem overlay if such a position is found, otherwise nil."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-,") 'clojure-test-run-tests)
     (define-key map (kbd "C-c ,")   'clojure-test-run-tests)
-    (define-key map (kbd "C-c M-,") 'clojure-test-run-test)
+    ;; (define-key map (kbd "C-c M-,") 'clojure-test-run-test)
     (define-key map (kbd "C-c C-'") 'clojure-test-show-result)
     (define-key map (kbd "C-c '")   'clojure-test-show-result)
     (define-key map (kbd "C-c k")   'clojure-test-clear)

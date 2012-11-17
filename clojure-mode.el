@@ -1152,18 +1152,26 @@ The arguments are dir, hostname, and port.  The return value should be an `alist
 (defun clojure-jump-to-test ()
   "Jump from implementation file to test."
   (interactive)
-  (let ((path (format "%stest/%s%s_test.clj"
-                      ;; project path
-                      (file-name-as-directory
-                       (locate-dominating-file buffer-file-name "src/"))
-                      ;; lang prefix (clj, cljs or empty string)
-                      (file-name-as-directory
-                       (clojure-language-folder buffer-file-name))
-                      ;; path of the namespace with test in between
-                      (clojure-test-for (clojure-find-ns)))))
-    (find-file path)))
-
-(clojure-test-for "dalap.selector")
+  (flet ((test-file (suffix)
+                    (format "%stest/%s%s%s"
+                            ;; project path
+                            (file-name-as-directory
+                             (locate-dominating-file buffer-file-name "src/"))
+                            ;; lang prefix (clj, cljs or empty string)
+                            (file-name-as-directory
+                             (clojure-language-folder buffer-file-name))
+                            ;; path of the namespace with test in between
+                            (clojure-test-for (clojure-find-ns))
+                            suffix)))
+    (let* ((suffixes '("_test.clj" ".clj"))
+           (existing-test-file
+            (car (remove-if-not #'file-exists-p (mapcar #'test-file suffixes)))))
+      (if (not existing-test-file)
+          (progn
+            (find-file (test-file "_test.clj"))
+            ;; (insert ...ns-form...)
+            )
+        (find-file existing-test-file)))))
 
 (defun clojure-jump-between-tests-and-code ()
   (interactive)

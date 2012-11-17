@@ -219,11 +219,11 @@
    (binding [clojure.test/report clojure.test.mode/report]
      (let [start (System/nanoTime)
            _ (refresh)
-           result (if *test-ns-regex*
+           result (if (and *test-ns-regex* (not (= *test-ns-regex* \"\")))
                     (clojure.test/run-all-tests *test-ns-regex*)
                     (clojure.test/run-all-tests))
            end (System/nanoTime)]
-       (list (str *test-ns-regex*)
+       (list (and *test-ns-regex* (str *test-ns-regex*))
              (:test result)
              (:pass result)
              (:fail result)
@@ -238,7 +238,7 @@
     (format
      "Ran %s tests%s. %s assertions pass, %s failures, %s errors. %s sec"
      clojure-test-test-count
-     (if (and clojure-test-ns-regex (not (equal clojure-test-ns-regex "")))
+     (if clojure-test-ns-regex
          (format " (filter-re: %s)" clojure-test-ns-regex)
        "")
      clojure-test-pass-count
@@ -259,11 +259,12 @@
               (format "%s.*" (car (split-string
                                    (slime-current-package) "\\."))))
           nil nil 'clojure-test-set-filter)))
+  (if (equal filter-regexp "")
+      (setq filter-regexp nil))
   (setq clojure-test-ns-regex filter-regexp)
   (clojure-test-eval
-   (format "(alter-var-root #'clojure.test.mode/*test-ns-regex*
-             (constantly #\"%s\"))"
-           filter-regexp)))
+   (format "(alter-var-root #'clojure.test.mode/*test-ns-regex* (constantly %s))"
+           (and filter-regexp (format "#\"%s\"" filter-regexp)))))
 
 (defun clojure-test-get-results (result)
   (destructuring-bind

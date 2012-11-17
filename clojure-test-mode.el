@@ -410,7 +410,7 @@ Retuns the problem overlay if such a position is found, otherwise nil."
 (defun clojure-test-jump-to-implementation ()
   "Jump from test file to implementation."
   (interactive)
-  (find-file (format "%s%s%s.clj"
+  (find-file (format "%s%ssrc/%s.clj"
                      (locate-dominating-file buffer-file-name "src/")
                      (file-name-as-directory
                       (clojure-language-folder buffer-file-name))

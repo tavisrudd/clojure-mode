@@ -1098,9 +1098,17 @@ The arguments are dir, hostname, and port.  The return value should be an `alist
 (defun clojure-find-ns ()
   (let ((regexp clojure-namespace-name-regex))
     (save-excursion
-      (when (or (re-search-backward regexp nil t)
-                (re-search-forward regexp nil t))
-        (match-string-no-properties 4)))))
+      (beginning-of-buffer)
+      (re-search-forward regexp nil t)
+      (match-string-no-properties 4)
+      ;; NOTE: this old implementation would fail in the following case:
+      ;; (ns foo.core)
+      ;;  ^ point is here
+      ;;
+      ;; (when (or (re-search-backward regexp nil t)
+      ;;           (re-search-forward regexp nil t))
+      ;;   (match-string-no-properties 4))
+      )))
 
 (defalias 'clojure-find-package 'clojure-find-ns)
 
